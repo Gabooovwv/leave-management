@@ -154,14 +154,21 @@ jobs:
               exit 1
             fi
 
+            echo "Using env file ${DEPLOY_PATH}/.env"
             required="MYSQL_ROOT_PASSWORD DATABASE_USER DATABASE_PASSWORD DATABASE_NAME AUTH_SECRET APP_ORIGIN"
+            missing=""
             for key in $required; do
-              value="$(grep -E "^${key}=" "$DEPLOY_PATH/.env" | tail -n 1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+              line="$(grep -E "^${key}=" "$DEPLOY_PATH/.env" | tail -n 1 || true)"
+              value="$(printf '%s' "$line" | cut -d= -f2- | tr -d '\r"' | tr -d "'" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
               if [ -z "$value" ]; then
-                echo "Missing ${key} in $DEPLOY_PATH/.env"
-                exit 1
+                missing="${missing} ${key}"
               fi
             done
+            if [ -n "$missing" ]; then
+              echo "Missing or empty in ${DEPLOY_PATH}/.env:${missing}"
+              echo "The server file needs MYSQL_ROOT_PASSWORD as well as the database and app keys. See deploy/.env.example."
+              exit 1
+            fi
 
             cat > "$DEPLOY_PATH/docker-compose.yml" <<EOF
             name: leave-management
