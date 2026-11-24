@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
+  appOrigin,
   googleAuthConfigured,
   googleCallbackUrl,
   googleClientId,
@@ -12,7 +13,7 @@ import { findRegisteredUserByEmail } from "@/lib/users";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const origin = url.origin;
+  const origin = appOrigin(request.url);
   const fail = (code: string) => NextResponse.redirect(new URL(`/login?error=${code}`, origin));
 
   const code = url.searchParams.get("code");

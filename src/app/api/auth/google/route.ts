@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
+  appOrigin,
   googleAuthConfigured,
   googleCallbackUrl,
   googleClientId,
@@ -9,7 +10,7 @@ import {
 } from "@/lib/google-auth";
 
 async function startGoogleLogin(request: Request) {
-  const origin = new URL(request.url).origin;
+  const origin = appOrigin(request.url);
   if (!googleAuthConfigured()) {
     return NextResponse.redirect(new URL("/login?error=google_config", origin));
   }
