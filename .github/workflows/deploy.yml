@@ -97,6 +97,12 @@ jobs:
               echo "DEPLOY_PATH secret is missing"
               exit 1
             fi
+            # GitHub secrets often include a trailing newline from the paste.
+            DEPLOY_PATH="$(printf '%s' "$DEPLOY_PATH" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            if [ -z "$DEPLOY_PATH" ]; then
+              echo "DEPLOY_PATH secret is empty"
+              exit 1
+            fi
             mkdir -p "$DEPLOY_PATH"
             if [ ! -f "$DEPLOY_PATH/.env" ]; then
               echo "Missing $DEPLOY_PATH/.env"
