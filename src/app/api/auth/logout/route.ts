@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
+import { appOrigin } from "@/lib/google-auth";
 import { clearSession } from "@/lib/session";
 
 async function logout(request: Request) {
   await clearSession();
-  return NextResponse.redirect(new URL("/login", request.url), 303);
+  return NextResponse.redirect(new URL("/login", appOrigin(request.url)), 303);
 }
 
 export async function GET(request: Request) {

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { appOrigin } from "@/lib/google-auth";
 import { authenticateLdap, LdapConfigError } from "@/lib/ldap";
 import { verifyPassword } from "@/lib/password";
 import { setSession } from "@/lib/session";
@@ -24,7 +25,7 @@ function success(request: Request, origin: string) {
 }
 
 export async function POST(request: Request) {
-  const origin = new URL(request.url).origin;
+  const origin = appOrigin(request.url);
   const formData = await request.formData();
   const username = String(formData.get("username") ?? "").trim();
   const password = String(formData.get("password") ?? "");
