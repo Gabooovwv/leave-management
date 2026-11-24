@@ -6,7 +6,7 @@ import {
   googleAuthConfigured,
   googleCallbackUrl,
   googleClientId,
-  googleHostedDomain,
+  googleHostedDomains,
 } from "@/lib/google-auth";
 
 async function startGoogleLogin(request: Request) {
@@ -34,9 +34,10 @@ async function startGoogleLogin(request: Request) {
   url.searchParams.set("prompt", "select_account");
   url.searchParams.set("access_type", "online");
 
-  const hostedDomain = googleHostedDomain();
-  if (hostedDomain) {
-    url.searchParams.set("hd", hostedDomain);
+  const hostedDomains = googleHostedDomains();
+  if (hostedDomains.length > 0) {
+    // Google accepts one domain or "*" as a UI hint; enforce the list in the callback.
+    url.searchParams.set("hd", hostedDomains.length === 1 ? hostedDomains[0] : "*");
   }
 
   return NextResponse.redirect(url);

@@ -10,10 +10,12 @@ export function googleClientSecret() {
   return process.env.GOOGLE_CLIENT_SECRET?.trim() ?? "";
 }
 
-/** Optional Google Workspace domain, e.g. virgo.hu */
-export function googleHostedDomain() {
-  const value = process.env.GOOGLE_HOSTED_DOMAIN?.trim();
-  return value || null;
+/** Optional comma-separated Google Workspace domains, e.g. virgo.hu,example.hu */
+export function googleHostedDomains() {
+  return [...new Set((process.env.GOOGLE_HOSTED_DOMAIN ?? "")
+    .split(",")
+    .map((domain) => domain.trim().toLowerCase())
+    .filter(Boolean))];
 }
 
 export function appOrigin(requestUrl: string) {

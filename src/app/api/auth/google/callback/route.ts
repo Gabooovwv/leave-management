@@ -6,7 +6,7 @@ import {
   googleCallbackUrl,
   googleClientId,
   googleClientSecret,
-  googleHostedDomain,
+  googleHostedDomains,
 } from "@/lib/google-auth";
 import { setSession } from "@/lib/session";
 import { findRegisteredUserByEmail } from "@/lib/users";
@@ -57,11 +57,11 @@ export async function GET(request: Request) {
   };
   if (!profile.email || profile.email_verified === false) return fail("google_failed");
 
-  const hostedDomain = googleHostedDomain();
-  if (hostedDomain) {
+  const hostedDomains = googleHostedDomains();
+  if (hostedDomains.length > 0) {
     const emailDomain = profile.email.split("@")[1]?.toLowerCase();
     const profileHd = profile.hd?.toLowerCase();
-    if (emailDomain !== hostedDomain.toLowerCase() && profileHd !== hostedDomain.toLowerCase()) {
+    if (!hostedDomains.some((domain) => domain === emailDomain || domain === profileHd)) {
       return fail("google_failed");
     }
   }
