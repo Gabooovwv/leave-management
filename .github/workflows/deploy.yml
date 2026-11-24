@@ -1,0 +1,239 @@
+name: Build and deploy
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Image name
+        run: |
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "SHA=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:${{ env.SHA }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test on port 4000
+        run: |
+          set -euo pipefail
+          docker rm -f leave-management-smoke >/dev/null 2>&1 || true
+          docker run -d --name leave-management-smoke -p 4000:3000 \
+            -e AUTH_SECRET=smoke \
+            "$IMAGE:$SHA"
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4000/login | grep -q "Szabadságkezelés"; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ok" -ne 1 ]; then
+            docker logs leave-management-smoke
+            exit 1
+          fi
+
+      - name: Remove smoke container
+        if: always()
+        run: docker rm -f leave-management-smoke >/dev/null 2>&1 || true
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        if: github.event_name == 'push'
+        run: |
+          docker tag "$IMAGE:$SHA" "$IMAGE:latest"
+          docker push "$IMAGE:$SHA"
+          docker push "$IMAGE:latest"
+
+      - name: Deploy to VPS
+        if: github.event_name == 'push'
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ env.IMAGE }}
+          SHA: ${{ env.SHA }}
+          ACTOR: ${{ github.actor }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: GITHUB_TOKEN,IMAGE,SHA,ACTOR,DEPLOY_PATH
+          script: |
+            set -euo pipefail
+            if [ -z "${DEPLOY_PATH:-}" ]; then
+              echo "DEPLOY_PATH secret is missing"
+              exit 1
+            fi
+            mkdir -p "$DEPLOY_PATH"
+            if [ ! -f "$DEPLOY_PATH/.env" ]; then
+              echo "Missing $DEPLOY_PATH/.env"
+              echo "Create it from deploy/.env.example (MYSQL_ROOT_PASSWORD, DATABASE_USER, DATABASE_PASSWORD, DATABASE_NAME, AUTH_SECRET, APP_ORIGIN)."
+              exit 1
+            fi
+
+            # Non-interactive SSH does not load /etc/profile, so snap and other Docker paths are missing.
+            set +e
+            set +u
+            [ -f /etc/profile ] && . /etc/profile
+            set -euo pipefail
+            export PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
+
+            if command -v docker >/dev/null 2>&1; then
+              DOCKER_BIN="$(command -v docker)"
+            elif [ -x /usr/bin/docker ]; then
+              DOCKER_BIN=/usr/bin/docker
+            elif [ -x /usr/local/bin/docker ]; then
+              DOCKER_BIN=/usr/local/bin/docker
+            elif [ -x /snap/bin/docker ]; then
+              DOCKER_BIN=/snap/bin/docker
+            else
+              echo "Docker is not installed on the VPS, or it is not executable for ${USER:-this user}."
+              echo "PATH=${PATH}"
+              exit 127
+            fi
+
+            if "$DOCKER_BIN" info >/dev/null 2>&1; then
+              DOCKER=("$DOCKER_BIN")
+            elif command -v sudo >/dev/null 2>&1 && sudo -n "$DOCKER_BIN" info >/dev/null 2>&1; then
+              DOCKER=(sudo "$DOCKER_BIN")
+            else
+              echo "Docker was found at ${DOCKER_BIN}, but ${USER:-this user} cannot run it."
+              echo "Add the user to the docker group, or allow passwordless sudo for docker."
+              exit 1
+            fi
+
+            if "${DOCKER[@]}" compose version >/dev/null 2>&1; then
+              COMPOSE=("${DOCKER[@]}" compose)
+            elif command -v docker-compose >/dev/null 2>&1; then
+              COMPOSE=(docker-compose)
+            elif [ -x /usr/bin/docker-compose ]; then
+              COMPOSE=(/usr/bin/docker-compose)
+            elif [ -x /snap/bin/docker-compose ]; then
+              COMPOSE=(/snap/bin/docker-compose)
+            else
+              echo "Docker Compose is not available on the VPS."
+              exit 1
+            fi
+
+            required="MYSQL_ROOT_PASSWORD DATABASE_USER DATABASE_PASSWORD DATABASE_NAME AUTH_SECRET APP_ORIGIN"
+            for key in $required; do
+              value="$(grep -E "^${key}=" "$DEPLOY_PATH/.env" | tail -n 1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+              if [ -z "$value" ]; then
+                echo "Missing ${key} in $DEPLOY_PATH/.env"
+                exit 1
+              fi
+            done
+
+            cat > "$DEPLOY_PATH/docker-compose.yml" <<EOF
+            name: leave-management
+
+            services:
+              mysql:
+                image: mysql:8.4
+                container_name: leave-management-mysql
+                restart: unless-stopped
+                environment:
+                  MYSQL_ROOT_PASSWORD: \${MYSQL_ROOT_PASSWORD}
+                  MYSQL_DATABASE: \${DATABASE_NAME}
+                  MYSQL_USER: \${DATABASE_USER}
+                  MYSQL_PASSWORD: \${DATABASE_PASSWORD}
+                command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+                ports:
+                  - "3037:3306"
+                volumes:
+                  - leave_mysql:/var/lib/mysql
+                healthcheck:
+                  test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\$\$MYSQL_ROOT_PASSWORD || exit 1"]
+                  interval: 5s
+                  timeout: 5s
+                  retries: 30
+                  start_period: 20s
+
+              web:
+                image: ${IMAGE}:${SHA}
+                container_name: leave-management
+                restart: unless-stopped
+                env_file:
+                  - .env
+                environment:
+                  DATABASE_HOST: mysql
+                  DATABASE_PORT: "3306"
+                ports:
+                  - "4001:3000"
+                depends_on:
+                  mysql:
+                    condition: service_healthy
+
+              phpmyadmin:
+                image: phpmyadmin:5
+                container_name: leave-management-phpmyadmin
+                restart: unless-stopped
+                ports:
+                  - "4011:80"
+                environment:
+                  PMA_HOST: mysql
+                  PMA_PORT: 3306
+                  PMA_USER: root
+                  PMA_PASSWORD: \${MYSQL_ROOT_PASSWORD}
+                  UPLOAD_LIMIT: 64M
+                depends_on:
+                  mysql:
+                    condition: service_healthy
+
+            volumes:
+              leave_mysql:
+                name: leave_management_prod
+            EOF
+            echo "$GITHUB_TOKEN" | "${DOCKER[@]}" login ghcr.io -u "$ACTOR" --password-stdin
+            "${COMPOSE[@]}" -f "$DEPLOY_PATH/docker-compose.yml" pull
+            "${COMPOSE[@]}" -f "$DEPLOY_PATH/docker-compose.yml" down --remove-orphans || true
+            for port in 4001 4011 3037; do
+              port_ids="$("${DOCKER[@]}" ps -q --filter publish="$port" || true)"
+              if [ -n "$port_ids" ]; then
+                echo "Removing containers already bound to port $port"
+                "${DOCKER[@]}" rm -f $port_ids
+              fi
+            done
+            "${DOCKER[@]}" rm -f leave-management leave-management-phpmyadmin >/dev/null 2>&1 || true
+            if command -v ss >/dev/null 2>&1; then
+              echo "Listeners on ports 4001, 4011 and 3037:"
+              ss -ltn 'sport = :4001' || true
+              ss -ltn 'sport = :4011' || true
+              ss -ltn 'sport = :3037' || true
+            fi
+            "${COMPOSE[@]}" -f "$DEPLOY_PATH/docker-compose.yml" up -d --force-recreate --remove-orphans
+            "${DOCKER[@]}" logout ghcr.io >/dev/null 2>&1 || true
+            "${DOCKER[@]}" image prune -f >/dev/null 2>&1 || true
