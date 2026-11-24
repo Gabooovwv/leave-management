@@ -38,16 +38,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke test on port 4000
+      - name: Smoke test on port 4001
         run: |
           set -euo pipefail
           docker rm -f leave-management-smoke >/dev/null 2>&1 || true
-          docker run -d --name leave-management-smoke -p 4000:3000 \
+          docker run -d --name leave-management-smoke -p 4001:3000 \
             -e AUTH_SECRET=smoke \
             "$IMAGE:$SHA"
           ok=0
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:4000/login | grep -q "Szabadságkezelés"; then
+            if curl -fsS http://127.0.0.1:4001/login | grep -q "Szabadságkezelés"; then
               ok=1
               break
             fi
